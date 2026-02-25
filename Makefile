@@ -57,6 +57,32 @@ test-sources:
 		-w /workspace \
 		$(NERDCTL_IMAGE) bash -c "uv run tests/test_sources.py"
 
+# ── Local (no container) ─────────────────────────────────────────────
+
+.PHONY: local-setup
+local-setup:
+	@echo "Installing dependencies..."
+	@uv sync
+
+.PHONY: local-run
+local-run:
+	@echo "Running query: $(QUERY)"
+	@uv run src/main.py --query '$(QUERY)' $(LOGGING) $(KEEP_AGENTS)
+
+.PHONY: local-eval
+local-eval:
+	@echo "Running BDD evaluation..."
+	@uv run src/eval.py --architecture $(EVAL_ARCHITECTURES) $(LOGGING)
+
+.PHONY: local-eval-all
+local-eval-all:
+	@$(MAKE) local-eval EVAL_ARCHITECTURES=all
+
+.PHONY: local-test-sources
+local-test-sources:
+	@echo "Testing data sources (no LLM needed)..."
+	@uv run tests/test_sources.py
+
 # ── Parallel comparison ──────────────────────────────────────────────
 
 ARCHITECTURES ?= single_agent researcher_critic multi_agent supervisor_worker plan_execute hybrid_p2p
@@ -115,17 +141,20 @@ compare-stop:
 help:
 	@echo "General Researcher — Makefile"
 	@echo ""
-	@echo "Setup:"
+	@echo "Container (requires nerdctl/docker):"
 	@echo "  make build                Build container image"
 	@echo "  make container            Interactive container with Azure creds"
-	@echo ""
-	@echo "Run:"
 	@echo "  make run QUERY='...'      Run a single query"
-	@echo "  make test-sources         Test data source APIs (no LLM)"
-	@echo ""
-	@echo "Eval:"
 	@echo "  make eval                 Run BDD eval (single_agent)"
 	@echo "  make eval-all             Run BDD eval (all architectures)"
+	@echo "  make test-sources         Test data source APIs (no LLM)"
+	@echo ""
+	@echo "Local (requires uv + az login):"
+	@echo "  make local-setup          Install dependencies (uv sync)"
+	@echo "  make local-run QUERY='..' Run a single query"
+	@echo "  make local-eval           Run BDD eval (single_agent)"
+	@echo "  make local-eval-all       Run BDD eval (all architectures)"
+	@echo "  make local-test-sources   Test data source APIs (no LLM)"
 	@echo ""
 	@echo "Compare (parallel containers):"
 	@echo "  make compare QUERY='...'  Compare architectures on a query"
@@ -134,7 +163,8 @@ help:
 	@echo "  make compare-stop         Stop all containers"
 	@echo ""
 	@echo "Options:"
-	@echo "  ARCHITECTURES='a b'       Subset of architectures"
+	@echo "  EVAL_ARCHITECTURES='a b'  Architectures for eval targets"
+	@echo "  ARCHITECTURES='a b'       Architectures for compare targets"
 	@echo "  MAX_RESULTS=10            Results per source (default: 5)"
 	@echo "  LOGGING=--verbose         Logging level"
 	@echo "  KEEP_AGENTS=--keep-agents Keep agents in Foundry after run"

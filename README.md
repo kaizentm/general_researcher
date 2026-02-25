@@ -184,12 +184,72 @@ src/
 └── run_architecture.py
 ```
 
-## Environment
+## Prerequisites
+
+Two paths to run this project: **containerized** (recommended) or **local**.
+
+### Option A: Container (recommended)
+
+Requires [nerdctl](https://github.com/containerd/nerdctl) (or Docker — swap `nerdctl` for `docker` in the Makefile).
 
 ```bash
-AZURE_AI_PROJECT_ENDPOINT=https://<project>.services.ai.azure.com/api
-MODEL_DEPLOYMENT_NAME=gpt-4o
-MODEL_DEPLOYMENT_NAME_FAST=gpt-4o-mini
+make build       # builds the image with Python 3.12, uv, and Azure CLI
+make container   # interactive shell with Azure login
 ```
+
+### Option B: Local
+
+1. **Python 3.10+**
+2. **[uv](https://docs.astral.sh/uv/)** — fast Python package manager
+
+   ```bash
+   # macOS / Linux
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+
+   # Windows
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+   # Or via Homebrew / pip
+   brew install uv
+   pip install uv
+   ```
+
+3. **Azure CLI** — `az login` is required for Foundry authentication
+
+   ```bash
+   curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash   # Debian/Ubuntu
+   brew install azure-cli                                     # macOS
+   ```
+
+4. **Install dependencies and run:**
+
+   ```bash
+   uv sync
+   uv run src/main.py --query 'AI safety federal actions'
+   ```
+
+## Azure requirements
+
+This project runs on [Azure AI Foundry](https://learn.microsoft.com/en-us/azure/ai-services/agents/). You need:
+
+1. **Azure AI Foundry project** — create one in the [Azure AI Foundry portal](https://ai.azure.com)
+2. **Model deployments** in your project:
+   - `gpt-4o` — used by Researcher, Synthesizer agents
+   - `gpt-4o-mini` — used by Critic, Planner, Source Worker agents
+3. **Azure CLI authentication** — `az login` (or set `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_CLIENT_SECRET` for service principal auth)
+
+### Environment variables
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AZURE_AI_PROJECT_ENDPOINT` | Yes | Foundry project endpoint (`https://<project>.services.ai.azure.com/api`) |
+| `MODEL_DEPLOYMENT_NAME` | Yes | Primary model deployment (default: `gpt-4o`) |
+| `MODEL_DEPLOYMENT_NAME_FAST` | Yes | Fast/cheap model deployment (default: `gpt-4o-mini`) |
+| `GOVINFO_API_KEY` | No | GovInfo API key (falls back to `DEMO_KEY` with rate limits) |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | Enables cloud trace export to Application Insights |
 
 Requires Python 3.10+, an Azure AI Foundry project with model deployments, and `az login`.
