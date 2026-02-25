@@ -62,49 +62,66 @@ class EvalRunner:
 
         # Clear span capture before running
         from utils.tracing import get_span_capture
+        from .actions import match_action
+
         capture = get_span_capture()
         if capture:
             capture.clear()
 
-        # Run the research pipeline
-        start = time.time()
-        try:
-            result = architecture.research(scenario.query, max_results_per_source=5)
-            elapsed = time.time() - start
-        except Exception as e:
-            elapsed = time.time() - start
-            logger.error("Scenario %s failed: %s", scenario.scenario_id, e)
-            return ScenarioResult(
-                scenario_id=scenario.scenario_id,
-                scenario_name=scenario.name,
-                category=scenario.category,
-                architecture=architecture_name,
-                completion_time=elapsed,
-                error=str(e),
-            )
-
-        # Collect captured spans
-        captured_spans = list(capture.get_finished_spans()) if capture else []
-
-        # Normalize output
-        citations_count = len(result.citations) if hasattr(result, 'citations') else _count_citations(result.answer)
-        sources_used = list(result.sources_checked) if hasattr(result, 'sources_checked') else []
-        output = ResearchOutput(
-            query=scenario.query,
-            answer=result.answer,
-            completion_time=elapsed,
-            documents_retrieved=result.documents_retrieved if hasattr(result, 'documents_retrieved') else 0,
-            citations_count=citations_count,
-            sources_used=sources_used,
-            spans=captured_spans,
-        )
-
-        # Evaluate Then assertions
+        # Execute stages: each when() dispatches an action, then() graders evaluate the result
+        context = {"query": scenario.query}
+        case_start = time.time()
+        current_subject = None
         step_results = []
-        for assertion, args in scenario._thens:
-            sr = match_step(assertion, args, output, llm_judge=self.llm_judge,
-                           azure_evaluators=self.azure_evaluators)
-            step_results.append(sr)
+
+        for stage_action, stage_thens in scenario.stages:
+            # Dispatch the action handler
+            handler = match_action(stage_action)
+            if handler is None:
+                logger.warning("No action handler for: %s", stage_action)
+                for assertion, args in stage_thens:
+                    step_results.append(StepResult(
+                        step_text=f"{assertion} {', '.join(str(a) for a in args)}".strip(),
+                        score=0.0,
+                        detail=f"No action handler registered for: {stage_action}",
+                        stage=stage_action,
+                    ))
+                continue
+
+            try:
+                action_start = time.time()
+                raw_result = handler(context, current_subject, architecture)
+                action_elapsed = time.time() - action_start
+            except Exception as e:
+                elapsed = time.time() - case_start
+                logger.error("Stage '%s' failed: %s", stage_action, e)
+                return ScenarioResult(
+                    scenario_id=scenario.scenario_id,
+                    scenario_name=scenario.name,
+                    category=scenario.category,
+                    architecture=architecture_name,
+                    completion_time=elapsed,
+                    error=f"Stage '{stage_action}' failed: {e}",
+                )
+
+            # Normalize output if this action produced a new result
+            if raw_result is not current_subject or current_subject is None:
+                captured_spans = list(capture.get_finished_spans()) if capture else []
+                logger.info("Stage '%s': captured %d spans in %.1fs",
+                           stage_action, len(captured_spans), action_elapsed)
+                current_subject = _normalize_output(
+                    raw_result, scenario.query, action_elapsed, captured_spans
+                )
+
+            # Run graders for this stage
+            for assertion, args in stage_thens:
+                sr = match_step(assertion, args, current_subject,
+                               llm_judge=self.llm_judge,
+                               azure_evaluators=self.azure_evaluators)
+                sr.stage = stage_action
+                step_results.append(sr)
+
+        elapsed = time.time() - case_start
 
         return ScenarioResult(
             scenario_id=scenario.scenario_id,
@@ -113,10 +130,10 @@ class EvalRunner:
             architecture=architecture_name,
             steps=step_results,
             completion_time=elapsed,
-            documents_retrieved=output.documents_retrieved,
-            citations_count=output.citations_count,
-            sources_used=output.sources_used,
-            answer=output.answer,
+            documents_retrieved=current_subject.documents_retrieved if current_subject else 0,
+            citations_count=current_subject.citations_count if current_subject else 0,
+            sources_used=current_subject.sources_used if current_subject else [],
+            answer=current_subject.answer if current_subject else "",
         )
 
     def run_all(
@@ -237,6 +254,7 @@ class EvalRunner:
                             "passed": s.passed,
                             "detail": s.detail,
                             "llm_judged": s.is_llm_judged,
+                            "stage": s.stage,
                         }
                         for s in r.steps
                     ],
@@ -256,6 +274,24 @@ def _count_citations(answer: str) -> int:
     return len(set(re.findall(r"\[(\d+)\]", answer)))
 
 
+def _normalize_output(raw_result, query: str, elapsed: float, spans: list) -> ResearchOutput:
+    """Normalize raw SUT output into a ResearchOutput subject."""
+    if isinstance(raw_result, ResearchOutput):
+        return raw_result
+    citations_count = (len(raw_result.citations) if hasattr(raw_result, 'citations')
+                       else _count_citations(raw_result.answer))
+    sources_used = list(raw_result.sources_checked) if hasattr(raw_result, 'sources_checked') else []
+    return ResearchOutput(
+        query=query,
+        answer=raw_result.answer,
+        completion_time=elapsed,
+        documents_retrieved=raw_result.documents_retrieved if hasattr(raw_result, 'documents_retrieved') else 0,
+        citations_count=citations_count,
+        sources_used=sources_used,
+        spans=spans,
+    )
+
+
 def _score_bar(score: float, width: int = 10) -> str:
     """Render a visual score bar like [████████░░]."""
     filled = round(score * width)
@@ -263,7 +299,7 @@ def _score_bar(score: float, width: int = 10) -> str:
 
 
 def _print_scenario_result(sr: ScenarioResult):
-    """Print a single scenario result with step scores."""
+    """Print a single scenario result with step scores grouped by stage."""
     status = "✓" if sr.passed else "✗"
     print(f"    {status} {sr.scenario_name} — score: {sr.overall_score:.2f} "
           f"({sr.completion_time:.1f}s, {sr.documents_retrieved} docs, {sr.citations_count} cites)")
@@ -272,7 +308,11 @@ def _print_scenario_result(sr: ScenarioResult):
         print(f"      ❌ Error: {sr.error}")
         return
 
+    current_stage = None
     for s in sr.steps:
+        if s.stage and s.stage != current_stage:
+            current_stage = s.stage
+            print(f"      ── {current_stage} ──")
         icon = "✓" if s.passed else "✗"
         suffix = " (LLM)" if s.is_llm_judged else ""
         cat = f"[{s.metric}]" if s.metric else ""

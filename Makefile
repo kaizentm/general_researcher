@@ -41,7 +41,7 @@ eval:
 		-v $(WORKSPACE):/workspace \
 		-w /workspace \
 		--env-file .env \
-		$(NERDCTL_IMAGE) bash -c "uv run src/eval.py --architecture $(EVAL_ARCHITECTURES) $(LOGGING)"
+		$(NERDCTL_IMAGE) bash -c "uv sync && uv run src/eval.py --architecture $(EVAL_ARCHITECTURES) $(LOGGING)"
 
 .PHONY: eval-all
 eval-all:

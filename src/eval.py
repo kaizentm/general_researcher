@@ -98,10 +98,10 @@ def main():
         return
     
     print("=" * 70)
-    print("  GENERAL RESEARCHER — BDD EVALUATION")
+    print("  GENERAL RESEARCHER — BEHAVIORAL EVALUATION")
     print("=" * 70)
     print(f"  Architectures: {', '.join(arch_keys)}")
-    print(f"  Scenarios: {len(scenarios)}")
+    print(f"  Total scenarios: {len(scenarios)}")
     if args.no_llm_judge:
         print("  LLM judge: disabled")
     if args.no_azure_eval:
@@ -138,8 +138,16 @@ def main():
             print(f"  {arch_info.get('emoji', '🔬')} {arch_info['name']}")
             print(f"{'=' * 70}")
             
+            # Filter scenarios to match this architecture's category
+            arch_scenarios = [s for s in scenarios if s.category == arch_key]
+            if not arch_scenarios:
+                print(f"  No scenarios for architecture '{arch_key}', skipping.")
+                continue
+            
+            print(f"  Scenarios: {len(arch_scenarios)}")
+            
             architecture = arch_info["class"](manager, data_sources)
-            results = runner.run_all(architecture, arch_key, scenarios=scenarios)
+            results = runner.run_all(architecture, arch_key, scenarios=arch_scenarios)
             
             runner.print_summary(results, arch_key)
             runner.save_results(results, arch_key)

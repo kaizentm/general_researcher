@@ -110,6 +110,19 @@ def _answer_should_not_mention(assertion, args, output, _, __) -> StepResult:
     )
 
 
+@step("the answer should contain a number")
+def _answer_contains_number(assertion, args, output, _, __) -> StepResult:
+    import re as _re
+    numbers = _re.findall(r'\b\d+(?:,\d{3})*(?:\.\d+)?%?\b', output.answer)
+    found = len(numbers) > 0
+    return StepResult(
+        step_text="the answer should contain a number",
+        score=1.0 if found else 0.0,
+        metric="relevance",
+        detail=f"found {len(numbers)} numbers" if found else "no numeric values found",
+    )
+
+
 # ── Groundedness steps (citations, evidence) ─────────────────────────
 
 @step("there should be at least")
@@ -168,6 +181,19 @@ def _min_documents(assertion, args, output, _, __) -> StepResult:
         score=score,
         metric="coverage",
         detail=f"{actual}/{n}",
+    )
+
+
+@step("unique sources used should be at least")
+def _min_unique_sources(assertion, args, output, _, __) -> StepResult:
+    n = int(args[0]) if args else _extract_number(assertion)
+    actual = len(output.sources_used)
+    score = min(actual / n, 1.0) if n > 0 else 1.0
+    return StepResult(
+        step_text=f"unique sources used should be at least {n}",
+        score=score,
+        metric="coverage",
+        detail=f"{actual}/{n} sources: {output.sources_used}",
     )
 
 
@@ -291,6 +317,12 @@ def _get_agent_spans(output) -> list:
     return [s for s in getattr(output, 'spans', []) if s.name.startswith("agent.run.")]
 
 
+def _get_named_agent_spans(output, agent_name: str) -> list:
+    """Extract spans for a specific agent by name."""
+    return [s for s in _get_agent_spans(output)
+            if s.attributes.get("agent.name", "") == agent_name]
+
+
 @step("the agent should have called")
 def _agent_called_tool(assertion, args, output, _, __) -> StepResult:
     tool_name = str(args[0]) if args else ""
@@ -366,4 +398,122 @@ def _max_agent_runs(assertion, args, output, _, __) -> StepResult:
         score=score,
         metric="latency",
         detail=f"{actual}/{max_runs}",
+    )
+
+
+# ── Architecture-specific process steps ──────────────────────────────
+
+@step("code should have been executed")
+def _code_executed(assertion, args, output, _, __) -> StepResult:
+    tool_spans = _get_tool_spans(output)
+    code_spans = [s for s in tool_spans if s.attributes.get("tool.name") == "execute_python"]
+    found = len(code_spans) > 0
+    return StepResult(
+        step_text="code should have been executed",
+        score=1.0 if found else 0.0,
+        metric="coverage",
+        detail=f"{len(code_spans)} code executions" if found else "execute_python never called",
+    )
+
+
+@step("no code execution errors")
+def _no_code_errors(assertion, args, output, _, __) -> StepResult:
+    tool_spans = _get_tool_spans(output)
+    code_spans = [s for s in tool_spans if s.attributes.get("tool.name") == "execute_python"]
+    if not code_spans:
+        return StepResult(
+            step_text="no code execution errors",
+            score=1.0,
+            metric="quality",
+            detail="no code executions recorded",
+        )
+    failed = [s for s in code_spans if s.attributes.get("tool.status") == "error"]
+    score = 1.0 - (len(failed) / len(code_spans)) if code_spans else 1.0
+    return StepResult(
+        step_text="no code execution errors",
+        score=score,
+        metric="quality",
+        detail="" if not failed else f"{len(failed)}/{len(code_spans)} executions failed",
+    )
+
+
+@step("the critic should have run")
+def _critic_ran(assertion, args, output, _, __) -> StepResult:
+    critic_spans = _get_named_agent_spans(output, "critic")
+    found = len(critic_spans) > 0
+    return StepResult(
+        step_text="the critic should have run",
+        score=1.0 if found else 0.0,
+        metric="coverage",
+        detail=f"{len(critic_spans)} critic run(s)" if found else "critic never ran",
+    )
+
+
+@step("critic iterations should be at most")
+def _max_critic_iterations(assertion, args, output, _, __) -> StepResult:
+    max_iters = int(args[0]) if args else _extract_number(assertion)
+    critic_spans = _get_named_agent_spans(output, "critic")
+    actual = len(critic_spans)
+    score = min(max_iters / actual, 1.0) if actual > 0 else 1.0
+    return StepResult(
+        step_text=f"critic iterations should be at most {max_iters}",
+        score=score,
+        metric="latency",
+        detail=f"{actual}/{max_iters} iterations",
+    )
+
+
+@step("the planner should have run")
+def _planner_ran(assertion, args, output, _, __) -> StepResult:
+    planner_spans = _get_named_agent_spans(output, "planner")
+    found = len(planner_spans) > 0
+    return StepResult(
+        step_text="the planner should have run",
+        score=1.0 if found else 0.0,
+        metric="coverage",
+        detail=f"{len(planner_spans)} planner run(s)" if found else "planner never ran",
+    )
+
+
+@step("the synthesizer should have run")
+def _synthesizer_ran(assertion, args, output, _, __) -> StepResult:
+    synth_spans = _get_named_agent_spans(output, "synthesizer")
+    found = len(synth_spans) > 0
+    return StepResult(
+        step_text="the synthesizer should have run",
+        score=1.0 if found else 0.0,
+        metric="coverage",
+        detail=f"{len(synth_spans)} synthesizer run(s)" if found else "synthesizer never ran",
+    )
+
+
+@step("source workers should have run at least")
+def _min_source_workers(assertion, args, output, _, __) -> StepResult:
+    min_workers = int(args[0]) if args else _extract_number(assertion)
+    agent_spans = _get_agent_spans(output)
+    # Source workers have names like "worker_govinfo", "worker_federal_register", etc.
+    worker_spans = [s for s in agent_spans
+                    if "worker" in s.attributes.get("agent.name", "").lower()]
+    actual = len(worker_spans)
+    score = min(actual / min_workers, 1.0) if min_workers > 0 else 1.0
+    return StepResult(
+        step_text=f"source workers should have run at least {min_workers}",
+        score=score,
+        metric="coverage",
+        detail=f"{actual}/{min_workers} workers",
+    )
+
+
+@step("distinct agents should have run at least")
+def _min_distinct_agents(assertion, args, output, _, __) -> StepResult:
+    min_agents = int(args[0]) if args else _extract_number(assertion)
+    agent_spans = _get_agent_spans(output)
+    distinct = set(s.attributes.get("agent.name", "") for s in agent_spans)
+    actual = len(distinct)
+    score = min(actual / min_agents, 1.0) if min_agents > 0 else 1.0
+    return StepResult(
+        step_text=f"distinct agents should have run at least {min_agents}",
+        score=score,
+        metric="coverage",
+        detail=f"{actual}/{min_agents} agents: {sorted(distinct)}",
     )

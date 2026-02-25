@@ -34,7 +34,7 @@ class FederalRegisterDataSource(DataSource):
                 }
                 
                 response = requests.get(url, params=params, timeout=30)
-                if response.status_code != 200:
+                if not response.ok:
                     return DataSourceResult(documents, error=f"{self.name} API error {response.status_code}: {response.text[:200]}")
                 
                 data = response.json()

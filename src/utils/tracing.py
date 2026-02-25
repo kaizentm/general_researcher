@@ -41,7 +41,7 @@ def setup_tracing(enable_cloud: Optional[bool] = None) -> bool:
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-        from opentelemetry.sdk.trace.export import InMemorySpanExporter
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
         # In-memory exporter — always active
         _span_capture = InMemorySpanExporter()
@@ -63,6 +63,7 @@ def setup_tracing(enable_cloud: Optional[bool] = None) -> bool:
 
         trace.set_tracer_provider(provider)
         _tracer = trace.get_tracer("general-researcher")
+        logger.info("Tracing initialized: tracer=%s span_capture=%s", type(_tracer).__name__, type(_span_capture).__name__)
 
         # Instrument OpenAI calls
         try:

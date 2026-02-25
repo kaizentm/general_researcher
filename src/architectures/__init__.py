@@ -5,6 +5,7 @@ from architectures.researcher_critic import ResearcherCriticOrchestrator
 from architectures.multi_agent import MultiAgentOrchestrator
 from architectures.supervisor_worker import SupervisorWorkerOrchestrator
 from architectures.single_agent import SingleAgentOrchestrator
+from architectures.single_agent_code import SingleAgentCodeOrchestrator
 from architectures.plan_and_execute import PlanAndExecuteOrchestrator
 from architectures.hybrid_p2p import HybridP2PHierarchical
 
@@ -14,6 +15,11 @@ ARCHITECTURES = {
         "name": "Single Agent",
         "class": SingleAgentOrchestrator,
         "emoji": "🔄",
+    },
+    "single_agent_code": {
+        "name": "Single Agent + Code Execution",
+        "class": SingleAgentCodeOrchestrator,
+        "emoji": "💻",
     },
     "researcher_critic": {
         "name": "Researcher-Critic Loop",
@@ -45,6 +51,7 @@ ARCHITECTURES = {
 __all__ = [
     'ResearchResult',
     'SingleAgentOrchestrator',
+    'SingleAgentCodeOrchestrator',
     'ResearcherCriticOrchestrator',
     'MultiAgentOrchestrator', 
     'SupervisorWorkerOrchestrator',

@@ -55,7 +55,7 @@ class CongressDataSource(DataSource):
                 url = f"{self.SEARCH_URL}?api_key={self.api_key}"
                 
                 response = requests.post(url, json=payload, timeout=30)
-                if response.status_code != 200:
+                if not response.ok:
                     return DataSourceResult(documents, error=f"GovInfo API error {response.status_code}: {response.text[:200]}")
                 
                 data = response.json()
