@@ -37,26 +37,52 @@ def step(pattern: str, is_llm: bool = False, is_azure_eval: bool = False):
 
 def match_step(assertion: str, args: tuple, output: "ResearchOutput",
                llm_judge=None, azure_evaluators=None) -> StepResult:
-    """Find and execute a matching step definition."""
-    for pattern, fn, is_llm, is_azure_eval in _STEP_DEFS:
-        if assertion.lower().startswith(pattern.lower()):
-            if is_llm and llm_judge is None:
-                return StepResult(
-                    step_text=_format_step(assertion, args),
-                    score=1.0,
-                    metric="quality",
-                    detail="Skipped (no LLM judge configured)",
-                    is_llm_judged=True,
-                )
-            if is_azure_eval and azure_evaluators is None:
-                return StepResult(
-                    step_text=_format_step(assertion, args),
-                    score=1.0,
-                    metric=_infer_metric(pattern),
-                    detail="Skipped (Azure evaluators not configured)",
-                    is_llm_judged=True,
-                )
-            return fn(assertion, args, output, llm_judge, azure_evaluators)
+    """
+    Find and execute a matching step definition (longest pattern match).
+    
+    Uses longest-pattern-first dispatch to resolve overlapping patterns deterministically.
+    For example, "the answer should mention one of" will match the specific
+    @step("the answer should mention one of") instead of the generic
+    @step("the answer should mention"), regardless of registration order.
+    
+    Args:
+        assertion: The assertion text to match (e.g., "the answer should mention AI")
+        args: Additional arguments for the assertion
+        output: Research output to validate against
+        llm_judge: Optional LLM judge for quality assessments
+        azure_evaluators: Optional Azure AI evaluators
+    
+    Returns:
+        StepResult with score, metric, and details
+    """
+    # Find all matching patterns
+    matches = [
+        (pattern, fn, is_llm, is_azure_eval)
+        for pattern, fn, is_llm, is_azure_eval in _STEP_DEFS
+        if assertion.lower().startswith(pattern.lower())
+    ]
+    
+    if matches:
+        # Use longest pattern (most specific match) - ensures order-independent dispatch
+        pattern, fn, is_llm, is_azure_eval = max(matches, key=lambda m: len(m[0]))
+        
+        if is_llm and llm_judge is None:
+            return StepResult(
+                step_text=_format_step(assertion, args),
+                score=1.0,
+                metric="quality",
+                detail="Skipped (no LLM judge configured)",
+                is_llm_judged=True,
+            )
+        if is_azure_eval and azure_evaluators is None:
+            return StepResult(
+                step_text=_format_step(assertion, args),
+                score=1.0,
+                metric=_infer_metric(pattern),
+                detail="Skipped (Azure evaluators not configured)",
+                is_llm_judged=True,
+            )
+        return fn(assertion, args, output, llm_judge, azure_evaluators)
 
     return StepResult(
         step_text=_format_step(assertion, args),
@@ -85,6 +111,20 @@ def _infer_metric(pattern: str) -> str:
 
 
 # ── Relevance steps (keyword/topic matching) ──────────────────────────
+
+@step("the answer should mention one of")
+def _answer_should_mention_one_of(assertion, args, output, _, __) -> StepResult:
+    terms = args[0] if args and isinstance(args[0], list) else list(args)
+    answer_lower = output.answer.lower()
+    matched = [t for t in terms if t.lower() in answer_lower]
+    found = len(matched) > 0
+    return StepResult(
+        step_text=f"the answer should mention one of {terms}",
+        score=1.0 if found else 0.0,
+        metric="relevance",
+        detail=f"matched: {matched}" if found else f"none of {terms} found in answer",
+    )
+
 
 @step("the answer should mention")
 def _answer_should_mention(assertion, args, output, _, __) -> StepResult:
@@ -401,6 +441,54 @@ def _max_agent_runs(assertion, args, output, _, __) -> StepResult:
     )
 
 
+@step("no redundant tool calls")
+def _no_redundant_tool_calls(assertion, args, output, _, __) -> StepResult:
+    tool_spans = _get_tool_spans(output)
+    seen = set()
+    redundant = []
+    for s in tool_spans:
+        key = (s.attributes.get("tool.name", ""), s.attributes.get("tool.arguments", ""))
+        if key in seen:
+            redundant.append(s.attributes.get("tool.name", "?"))
+        seen.add(key)
+    total = len(tool_spans)
+    score = 1.0 - (len(redundant) / total) if total > 0 else 1.0
+    return StepResult(
+        step_text="no redundant tool calls",
+        score=score,
+        metric="latency",
+        detail="" if not redundant else f"{len(redundant)} redundant: {redundant}",
+    )
+
+
+@step("search queries should be at least")
+def _min_search_queries(assertion, args, output, _, __) -> StepResult:
+    """Count distinct (tool, query) pairs across search tool calls."""
+    import json as _json
+    min_queries = int(args[0]) if args else _extract_number(assertion)
+    tool_spans = _get_tool_spans(output)
+    queries = set()
+    for s in tool_spans:
+        name = s.attributes.get("tool.name", "")
+        if not name.startswith("search_"):
+            continue
+        raw_args = s.attributes.get("tool.arguments", "")
+        try:
+            parsed = _json.loads(raw_args)
+            q = parsed.get("query", "")
+        except (ValueError, AttributeError):
+            q = raw_args
+        queries.add((name, q))
+    actual = len(queries)
+    score = min(actual / min_queries, 1.0) if min_queries > 0 else 1.0
+    return StepResult(
+        step_text=f"search queries should be at least {min_queries}",
+        score=score,
+        metric="coverage",
+        detail=f"{actual}/{min_queries} distinct queries",
+    )
+
+
 # ── Architecture-specific process steps ──────────────────────────────
 
 @step("code should have been executed")
@@ -517,3 +605,43 @@ def _min_distinct_agents(assertion, args, output, _, __) -> StepResult:
         metric="coverage",
         detail=f"{actual}/{min_agents} agents: {sorted(distinct)}",
     )
+
+
+# ── Pattern validation ───────────────────────────────────────────────
+
+def _validate_patterns():
+    """
+    Validate step patterns at import time.
+    
+    Checks for overlapping patterns that could cause matching ambiguities.
+    Since we use longest-match-first dispatch, overlaps are handled correctly,
+    but this validation helps developers understand the pattern hierarchy.
+    
+    Warnings are issued for informational purposes only and do not block execution.
+    """
+    import warnings as warn_module
+    
+    patterns = [p for p, _, _, _ in _STEP_DEFS]
+    warnings = []
+    
+    for i, pattern1 in enumerate(patterns):
+        for j, pattern2 in enumerate(patterns):
+            if i != j and pattern1.lower() != pattern2.lower():
+                # Check if pattern1 is substring of pattern2
+                if pattern1.lower() in pattern2.lower():
+                    warnings.append(
+                        f"Overlapping patterns detected: '{pattern1}' is substring of '{pattern2}'. "
+                        f"Longest-match-first dispatch is active (longer pattern takes precedence)."
+                    )
+    
+    if warnings:
+        # Deduplicate warnings (each overlap found twice due to pairwise check)
+        seen = set()
+        for warning in warnings:
+            if warning not in seen:
+                warn_module.warn(warning, RuntimeWarning, stacklevel=2)
+                seen.add(warning)
+
+
+# Call validation at module import time
+_validate_patterns()

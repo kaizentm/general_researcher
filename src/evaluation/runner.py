@@ -278,12 +278,17 @@ def _normalize_output(raw_result, query: str, elapsed: float, spans: list) -> Re
     """Normalize raw SUT output into a ResearchOutput subject."""
     if isinstance(raw_result, ResearchOutput):
         return raw_result
+    if raw_result is None:
+        return ResearchOutput(
+            query=query, answer="", completion_time=elapsed,
+            documents_retrieved=0, citations_count=0, sources_used=[], spans=spans,
+        )
     citations_count = (len(raw_result.citations) if hasattr(raw_result, 'citations')
-                       else _count_citations(raw_result.answer))
+                       else _count_citations(getattr(raw_result, 'answer', '') or ''))
     sources_used = list(raw_result.sources_checked) if hasattr(raw_result, 'sources_checked') else []
     return ResearchOutput(
         query=query,
-        answer=raw_result.answer,
+        answer=getattr(raw_result, 'answer', '') or '',
         completion_time=elapsed,
         documents_retrieved=raw_result.documents_retrieved if hasattr(raw_result, 'documents_retrieved') else 0,
         citations_count=citations_count,

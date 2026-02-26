@@ -21,6 +21,97 @@ MAX_COMPLETION_TIME = 20  # seconds
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Assertion composition helper
+# ═══════════════════════════════════════════════════════════════════════
+
+class AssertionGroup:
+    """
+    Helper for composing common assertion combinations in scenario templates.
+    
+    Consolidates frequently repeated assertion patterns into reusable methods,
+    reducing code duplication across architecture templates while maintaining
+    identical assertion behavior.
+    
+    Usage:
+        @template("my template", category="my_cat")
+        def my_template(s, data):
+            s.given("a query", data["query"])
+            s.when("the agent researches")
+            AssertionGroup(s).research_expectations(data)
+            s.when("the agent synthesizes")
+            AssertionGroup(s).synthesis_expectations(data)
+    """
+    
+    def __init__(self, scenario_builder):
+        """
+        Args:
+            scenario_builder: ScenarioBuilder instance (the 's' parameter in templates).
+        """
+        self.s = scenario_builder
+    
+    def research_expectations(self, data, include_search_queries=True):
+        """
+        Common research phase assertions for document retrieval and tool usage.
+        
+        Includes: expected source calls, tool call validation, document counts,
+        source diversity, and search query metrics.
+        
+        Args:
+            data: Scenario data dict with keys like expected_source, min_docs, etc.
+            include_search_queries: Whether to assert minimum search queries (default True)
+        """
+        if data.get("expected_source"):
+            self.s.then("the agent should have called", data["expected_source"])
+            self.s.then("sources should include", data["source_label"])
+        self.s.then("no tool calls should have failed")
+        self.s.then("total tool calls should be at least", 1)
+        self.s.then("no redundant tool calls")
+        self.s.then("documents retrieved should be at least", data.get("min_docs", 3))
+        self.s.then("unique sources used should be at least", data.get("min_sources", 1))
+        if include_search_queries and data.get("min_search_queries"):
+            self.s.then("search queries should be at least", data["min_search_queries"])
+    
+    def synthesis_expectations(self, data, include_numbers=False):
+        """
+        Common synthesis/answer phase assertions for answer quality.
+        
+        Includes: keyword mentions, temporal term matching, citation counts,
+        minimum length, and LLM-judged quality criteria.
+        
+        Args:
+            data: Scenario data dict with expected_terms, quality_criteria, etc.
+            include_numbers: Whether to assert a number appears in answer (default False)
+        """
+        for term in data["expected_terms"]:
+            self.s.then("the answer should mention", term)
+        if data.get("temporal_terms"):
+            self.s.then("the answer should mention one of", data["temporal_terms"])
+        if include_numbers:
+            self.s.then("the answer should contain a number")
+        self.s.then("there should be at least 2 citations", data.get("min_citations", 2))
+        self.s.then("the answer should be at least 150 characters", data.get("min_length", 150))
+        self.s.then("the answer should be", data["quality_criteria"])
+    
+    def critic_expectations(self):
+        """
+        Common critic evaluation assertions.
+        
+        Validates that critic agent ran and respects iteration limits.
+        """
+        self.s.then("the critic should have run")
+        self.s.then("critic iterations should be at most", 3)
+    
+    def code_execution_expectations(self):
+        """
+        Code execution phase assertions.
+        
+        Validates that code was executed without errors.
+        """
+        self.s.then("code should have been executed")
+        self.s.then("no code execution errors")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Architecture-specific templates
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -32,21 +123,11 @@ def single_agent(s, data):
     s.given("a query", data["query"])
 
     s.when("the agent researches this query")
-    if data.get("expected_source"):
-        s.then("the agent should have called", data["expected_source"])
-        s.then("sources should include", data["source_label"])
-    s.then("no tool calls should have failed")
-    s.then("total tool calls should be at least", 1)
-    s.then("documents retrieved should be at least", data.get("min_docs", 3))
-    s.then("unique sources used should be at least", 1)
+    AssertionGroup(s).research_expectations(data)
 
     s.when("the agent synthesizes the results")
     s.then("completion time should be under", data.get("max_time", MAX_COMPLETION_TIME))
-    for term in data["expected_terms"]:
-        s.then("the answer should mention", term)
-    s.then("there should be at least 2 citations", data.get("min_citations", 2))
-    s.then("the answer should be at least 150 characters", data.get("min_length", 150))
-    s.then("the answer should be", data["quality_criteria"])
+    AssertionGroup(s).synthesis_expectations(data)
 
 
 # ── Single Agent + Code Execution ────────────────────────────────────
@@ -57,25 +138,14 @@ def single_agent_code(s, data):
     s.given("a query", data["query"])
 
     s.when("the agent researches this query")
-    if data.get("expected_source"):
-        s.then("the agent should have called", data["expected_source"])
-        s.then("sources should include", data["source_label"])
-    s.then("no tool calls should have failed")
-    s.then("total tool calls should be at least", 1)
-    s.then("documents retrieved should be at least", data.get("min_docs", 3))
-    s.then("unique sources used should be at least", 1)
+    AssertionGroup(s).research_expectations(data)
 
     s.when("the agent executes code")
-    s.then("code should have been executed")
-    s.then("no code execution errors")
+    AssertionGroup(s).code_execution_expectations()
 
     s.when("the agent synthesizes the results")
     s.then("completion time should be under", data.get("max_time", MAX_COMPLETION_TIME * 2))
-    for term in data["expected_terms"]:
-        s.then("the answer should mention", term)
-    s.then("the answer should contain a number")
-    s.then("there should be at least 2 citations", data.get("min_citations", 2))
-    s.then("the answer should be", data["quality_criteria"])
+    AssertionGroup(s).synthesis_expectations(data, include_numbers=True)
 
 
 # ── Researcher-Critic ────────────────────────────────────────────────
@@ -86,25 +156,14 @@ def researcher_critic(s, data):
     s.given("a query", data["query"])
 
     s.when("the agent researches this query")
-    if data.get("expected_source"):
-        s.then("the agent should have called", data["expected_source"])
-        s.then("sources should include", data["source_label"])
-    s.then("no tool calls should have failed")
-    s.then("total tool calls should be at least", 1)
-    s.then("documents retrieved should be at least", data.get("min_docs", 3))
-    s.then("unique sources used should be at least", 1)
+    AssertionGroup(s).research_expectations(data)
 
     s.when("the critic evaluates the research")
-    s.then("the critic should have run")
-    s.then("critic iterations should be at most", 3)
+    AssertionGroup(s).critic_expectations()
 
     s.when("the agent synthesizes the results")
     s.then("completion time should be under", data.get("max_time", MAX_COMPLETION_TIME * 2))
-    for term in data["expected_terms"]:
-        s.then("the answer should mention", term)
-    s.then("there should be at least 2 citations", data.get("min_citations", 2))
-    s.then("the answer should be at least 150 characters", data.get("min_length", 150))
-    s.then("the answer should be", data["quality_criteria"])
+    AssertionGroup(s).synthesis_expectations(data)
 
 
 # ── Multi-Agent (R → C → S) ─────────────────────────────────────────
@@ -115,27 +174,16 @@ def multi_agent(s, data):
     s.given("a query", data["query"])
 
     s.when("the agent researches this query")
-    if data.get("expected_source"):
-        s.then("the agent should have called", data["expected_source"])
-        s.then("sources should include", data["source_label"])
-    s.then("no tool calls should have failed")
-    s.then("total tool calls should be at least", 1)
-    s.then("documents retrieved should be at least", data.get("min_docs", 3))
-    s.then("unique sources used should be at least", 1)
+    AssertionGroup(s).research_expectations(data)
 
     s.when("the critic evaluates the research")
-    s.then("the critic should have run")
-    s.then("critic iterations should be at most", 3)
+    AssertionGroup(s).critic_expectations()
     s.then("distinct agents should have run at least", 3)
 
     s.when("the synthesizer produces the answer")
     s.then("the synthesizer should have run")
     s.then("completion time should be under", data.get("max_time", MAX_COMPLETION_TIME * 2))
-    for term in data["expected_terms"]:
-        s.then("the answer should mention", term)
-    s.then("there should be at least 2 citations", data.get("min_citations", 2))
-    s.then("the answer should be at least 150 characters", data.get("min_length", 150))
-    s.then("the answer should be", data["quality_criteria"])
+    AssertionGroup(s).synthesis_expectations(data)
 
 
 # ── Plan-and-Execute ─────────────────────────────────────────────────
@@ -149,27 +197,16 @@ def plan_execute(s, data):
     s.then("the planner should have run")
 
     s.when("the agent executes the plan")
-    if data.get("expected_source"):
-        s.then("the agent should have called", data["expected_source"])
-        s.then("sources should include", data["source_label"])
-    s.then("no tool calls should have failed")
-    s.then("total tool calls should be at least", 1)
-    s.then("documents retrieved should be at least", data.get("min_docs", 3))
-    s.then("unique sources used should be at least", 1)
+    AssertionGroup(s).research_expectations(data)
 
     s.when("the critic evaluates the research")
-    s.then("the critic should have run")
-    s.then("critic iterations should be at most", 3)
+    AssertionGroup(s).critic_expectations()
 
     s.when("the synthesizer produces the answer")
     s.then("the synthesizer should have run")
     s.then("distinct agents should have run at least", 4)
     s.then("completion time should be under", data.get("max_time", MAX_COMPLETION_TIME * 3))
-    for term in data["expected_terms"]:
-        s.then("the answer should mention", term)
-    s.then("there should be at least 2 citations", data.get("min_citations", 2))
-    s.then("the answer should be at least 150 characters", data.get("min_length", 150))
-    s.then("the answer should be", data["quality_criteria"])
+    AssertionGroup(s).synthesis_expectations(data)
 
 
 # ── Supervisor-Worker ────────────────────────────────────────────────
@@ -184,9 +221,13 @@ def supervisor_worker(s, data):
 
     s.when("the source workers execute")
     s.then("source workers should have run at least", data.get("min_workers", 2))
+    # Use research_expectations without expected_source (handled by workers)
     s.then("no tool calls should have failed")
+    s.then("no redundant tool calls")
     s.then("documents retrieved should be at least", data.get("min_docs", 3))
     s.then("unique sources used should be at least", data.get("min_sources", 2))
+    if data.get("min_search_queries"):
+        s.then("search queries should be at least", data["min_search_queries"])
 
     s.when("the critic evaluates the research")
     s.then("the critic should have run")
@@ -194,11 +235,7 @@ def supervisor_worker(s, data):
     s.when("the synthesizer produces the answer")
     s.then("the synthesizer should have run")
     s.then("completion time should be under", data.get("max_time", MAX_COMPLETION_TIME * 3))
-    for term in data["expected_terms"]:
-        s.then("the answer should mention", term)
-    s.then("there should be at least 2 citations", data.get("min_citations", 2))
-    s.then("the answer should be at least 150 characters", data.get("min_length", 150))
-    s.then("the answer should be", data["quality_criteria"])
+    AssertionGroup(s).synthesis_expectations(data)
 
 
 # ── Hybrid P2P ───────────────────────────────────────────────────────
@@ -211,22 +248,17 @@ def hybrid_p2p(s, data):
     s.when("the workers research with peer sharing")
     s.then("source workers should have run at least", data.get("min_workers", 2))
     s.then("no tool calls should have failed")
+    s.then("no redundant tool calls")
     s.then("documents retrieved should be at least", data.get("min_docs", 3))
     s.then("unique sources used should be at least", data.get("min_sources", 2))
+    if data.get("min_search_queries"):
+        s.then("search queries should be at least", data["min_search_queries"])
 
     s.when("the synthesizer produces the answer")
     s.then("the synthesizer should have run")
     s.then("completion time should be under", data.get("max_time", MAX_COMPLETION_TIME * 3))
-    for term in data["expected_terms"]:
-        s.then("the answer should mention", term)
-    s.then("there should be at least 2 citations", data.get("min_citations", 2))
-    s.then("the answer should be at least 150 characters", data.get("min_length", 150))
-    s.then("the answer should be", data["quality_criteria"])
+    AssertionGroup(s).synthesis_expectations(data)
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# Shared dataset — same queries, architecture-specific behavior
-# ═══════════════════════════════════════════════════════════════════════
 
 LEGISLATION_CASES = [
     {
@@ -304,14 +336,100 @@ ANALYTICAL_CASES = [
     },
 ]
 
+AMBIGUOUS_CASES = [
+    {
+        "query": "AI policy",
+        "expected_terms": ["artificial intelligence"],
+        "quality_criteria": "specific about which jurisdiction or policy area, not a vague overview",
+        "min_citations": 2,
+    },
+    {
+        "query": "water rules",
+        "expected_terms": ["water"],
+        "quality_criteria": "specific about which regulations or standards, not generic",
+        "min_citations": 2,
+    },
+]
+
+MULTI_PART_CASES = [
+    {
+        "query": "What has Congress done on AI policy and how does it compare to cybersecurity legislation?",
+        "expected_terms": ["artificial intelligence", "cybersecurity"],
+        "quality_criteria": "addresses both AI and cybersecurity with explicit comparison between them",
+        "min_citations": 3,
+        "min_sources": 2,
+    },
+    {
+        "query": "What EPA regulations exist for water quality and what datasets track compliance?",
+        "expected_terms": ["EPA", "water"],
+        "quality_criteria": "addresses both the regulatory framework and available data sources separately",
+        "min_citations": 2,
+        "min_sources": 2,
+    },
+]
+
+TEMPORAL_CASES = [
+    {
+        "query": "What are the most recent changes to clean water regulations?",
+        "expected_terms": ["water", "regulation"],
+        "temporal_terms": ["2024", "2025", "recent"],
+        "quality_criteria": "focuses on recent regulatory changes, not a historical overview",
+    },
+    {
+        "query": "Latest congressional action on AI in the current session",
+        "expected_terms": ["AI", "Congress"],
+        "temporal_terms": ["2025", "118th", "119th", "current"],
+        "quality_criteria": "specific to the current or most recent congressional session, not a history lesson",
+    },
+]
+
+SOURCE_SELECTION_CASES = [
+    {
+        "query": "What final rules has the EPA published on emissions standards?",
+        "expected_terms": ["EPA", "emissions"],
+        "quality_criteria": "specific about regulatory details from the Federal Register",
+        "expected_source": "search_federal_register",
+        "source_label": "Federal Register",
+        "min_docs": 3,
+    },
+    {
+        "query": "Congressional hearings on technology antitrust",
+        "expected_terms": ["antitrust"],
+        "quality_criteria": "specific about congressional activity, not general news",
+        "expected_source": "search_govinfo",
+        "source_label": "GovInfo",
+    },
+]
+
+MULTI_SOURCE_CASES = [
+    {
+        "query": "How do federal regulations on drug pricing compare to legislative proposals in Congress?",
+        "expected_terms": ["drug", "pricing"],
+        "quality_criteria": "synthesizes both regulatory and legislative perspectives with explicit comparison",
+        "min_sources": 2,
+        "min_search_queries": 2,
+        "min_citations": 3,
+    },
+    {
+        "query": "What government datasets track air quality, and what EPA rules govern air pollution?",
+        "expected_terms": ["air quality"],
+        "quality_criteria": "covers both available datasets and regulatory requirements separately",
+        "min_sources": 2,
+        "min_search_queries": 2,
+        "min_citations": 2,
+    },
+]
+
 # Merge all cases into one dataset
-ALL_CASES = LEGISLATION_CASES + REGULATION_CASES + DATASET_CASES + POLICY_CASES
+ALL_CASES = (LEGISLATION_CASES + REGULATION_CASES + DATASET_CASES + POLICY_CASES
+             + AMBIGUOUS_CASES + MULTI_PART_CASES + TEMPORAL_CASES
+             + SOURCE_SELECTION_CASES + MULTI_SOURCE_CASES)
 
 # ═══════════════════════════════════════════════════════════════════════
 # Generate cases: each architecture × each query
 # ═══════════════════════════════════════════════════════════════════════
 
-# Every architecture gets the standard cases
+# Every architecture gets all cases (including query interpretation)
 single_agent.cases(ALL_CASES)
 researcher_critic.cases(ALL_CASES)
 multi_agent.cases(ALL_CASES)
